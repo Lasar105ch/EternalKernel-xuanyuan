@@ -1,0 +1,50 @@
+name: EternalKernel baseline
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android
+          sudo docker system prune -af || true
+          sudo apt-get update
+          sudo apt-get install -y git curl bc bison flex build-essential libssl-dev libelf-dev python3 rsync cpio unzip zip zstd lz4
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          df -h
+      - name: Sync sources
+        run: |
+          mkdir kernel
+          cd kernel
+          git config --global user.name "EternalKernel CI"
+          git config --global user.email "ci@example.invalid"
+          repo init -u https://android.googlesource.com/kernel/manifest -b common-android15-6.6-2026-01 --depth=1
+          repo sync -c -j4 --no-tags --no-clone-bundle --fail-fast
+          git -C common fetch --depth=1 https://android.googlesource.com/kernel/common 0908354dac1b8a65a215da1ca0c9c78dcd83014f
+          git -C common checkout --detach FETCH_HEAD
+          test "$(git -C common rev-parse HEAD)" = 0908354dac1b8a65a215da1ca0c9c78dcd83014f
+          repo manifest -r -o "$GITHUB_WORKSPACE/pinned-manifest.xml"
+          df -h
+      - name: Compile baseline
+        working-directory: kernel
+        run: |
+          tools/bazel run --jobs=4 //common:kernel_aarch64_dist -- --destdir="$GITHUB_WORKSPACE/dist"
+      - name: Package
+        run: |
+          cp pinned-manifest.xml dist/
+          echo "Experimental generic GKI baseline; not validated for flashing." > dist/EXPERIMENTAL.txt
+          tar -czf EternalKernel-baseline.tar.gz -C dist .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EternalKernel-baseline-UNTESTED
+          path: EternalKernel-baseline.tar.gz
+          if-no-files-found: error
+          retention-days: 7
